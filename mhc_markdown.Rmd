@@ -1,0 +1,1413 @@
+---
+title: "MHC variability"
+output: html_document
+---
+
+```{r load-packages, include=FALSE}
+load("my_workspace.RData")
+library(dplyr)
+library(magrittr)
+library(knitr)
+library(forcats)
+library(ggplot2)
+library(reshape2)
+library(bio3d)
+library(bios2mds)
+library(msa)
+library(ggridges)
+library(stringr)
+library(phangorn)
+library(tibble)
+library(tidyverse)
+library(Bios2cor)
+library(tidyr)
+library(ggbeeswarm)
+library(phylogram)
+library(seqRFLP)
+library(DECIPHER)
+library(ggseqlogo)
+```
+
+```{r, cache=TRUE}
+mir_atomdist <- read.table("C:\\Users\\User\\Documents\\r_dir\\mir_atomdist.txt", sep = "", header = T)
+library(dplyr)
+mir_atomdist <- select(mir_atomdist, -c(dist, atom.to, atom.from))
+mir_general <- read.table("C:\\Users\\User\\Documents\\r_dir\\mir_general.txt", sep = "", header = T, na.strings = "NA", fill = T)
+mir_resmarkup <- read.table("C:\\Users\\User\\Documents\\r_dir\\mir_resmarkup.txt", sep = "", header = T, fill = T)
+mir_atomdist_inv <- mir_atomdist[c("pdb.id", "chain.id.to", "chain.id.from", "residue.index.to", "residue.index.from")]
+colnames(mir_atomdist_inv) <- c("pdb.id", "chain.id.from", "chain.id.to", "residue.index.from", "residue.index.to")
+atomdist_binded <- rbind(mir_atomdist, mir_atomdist_inv)
+pdb_data <- select(filter(mir_general, chain.supertype == "MHCI" & chain.type == "MHCa"), 1)
+pdb_vector <- as.vector(pdb_data$pdb.id)    #всего 161 наименование
+atomdist_binded <- filter(atomdist_binded, pdb.id %in% pdb_vector)
+general_filtered <- filter(mir_general, pdb.id %in% pdb_vector)
+general_filtered_1 <- select(general_filtered, 1, 5, 6)
+names(general_filtered_1) <- c("pdb.id", "chain.type.from", "chain.id.from")
+general_filtered_2 <- select(general_filtered, 1, 5, 6)
+names(general_filtered_2) <- c("pdb.id", "chain.type.to", "chain.id.to")
+merged_data <- merge(atomdist_binded, general_filtered_2, by = c("pdb.id", "chain.id.to"))
+merged_data <- merge(merged_data, general_filtered_1, by = c("pdb.id", "chain.id.from"))
+merged_data <- merged_data[, c("pdb.id", "chain.id.from", "chain.id.to", "residue.index.from", "residue.index.to", "chain.type.from", "chain.type.to")]
+data_filtered <- filter(merged_data, chain.type.from != "MHCb" & chain.type.to != "MHCb")
+data_filtered <- filter(data_filtered, chain.type.from == "MHCa")
+head(data_filtered)
+length(unique(as.vector(mir_atomdist$pdb.id)))  
+length(unique(as.vector(mir_general$pdb.id)))   
+chains <- mir_general %>% 
+  group_by(pdb.id) %>% 
+  select(pdb.id, chain.id) %>% 
+  distinct() %>% 
+  summarise(n=n()) #количество цепей у каждой pdb-структуры
+unique(chains$n)
+mir_resmarkup <- select(mir_resmarkup, -residue.aa)
+mir_general_for <- select(general_filtered, 1, 5, 6)
+mir_general_for <- filter(mir_general_for, chain.type == "MHCa")
+mir_general_for <- mir_general_for[, c("pdb.id", "chain.id", "chain.type")]
+resmarkup_filtered <- filter(mir_resmarkup, pdb.id %in% pdb_vector)
+
+finish_file <- merge(mir_general_for, resmarkup_filtered, by.x = c("pdb.id", "chain.id"))
+finish_file <- arrange(finish_file, pdb.id, residue.index, region.type)
+head(finish_file)
+hla_pdb_sequences <- summarise(group_by(finish_file, pdb.id), sequence = paste(residue.ins.code, collapse = ""))
+pdb_len <- lapply(hla_pdb_sequences$sequence, nchar)
+pdb_len <- as.vector(unlist(pdb_len))
+ggplot(as.data.frame(pdb_len), aes(x = pdb_len))+
+     geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1.5)+
+     labs(x = "length", y = "count")+
+     ggtitle("PDB lengths")
+length(hla_pdb_sequences$sequence)
+length(unique(hla_pdb_sequences$sequence))
+allele_info <- filter(general_filtered, chain.supertype == "MHCI" & chain.type == "MHCa")$allele.info
+table(allele_info) #аллелей HLA-A2 больше всего
+finish_file <- merge(finish_file, distinct(select(general_filtered, 1, 2)), by.x = "pdb.id") #информация про организм
+data_filtered <- merge(data_filtered, distinct(select(general_filtered, 1, 2)), by.x = "pdb.id") #информация про организм
+hla_pdb_sequences <- merge(hla_pdb_sequences, distinct(select(general_filtered, 1, 2)), by.x = "pdb.id") #информация про организм
+
+finish_file <- filter(finish_file, complex.species != "Mouse")
+data_filtered <- filter(data_filtered, complex.species != "Mouse")
+hla_pdb_sequences <- filter(hla_pdb_sequences, complex.species != "Mouse") #удаление мышиных аллелей
+
+
+```
+
+```{r, cache=TRUE}
+library(msa)
+hla_a_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\hla_a.fasta")
+hla_b_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\hla_b.fasta")
+hla_c_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\hla_c.fasta")
+hla_a_aln <- msa(hla_a_seq, method = "ClustalOmega")
+hla_b_aln <- msa(hla_b_seq, method = "ClustalOmega")
+hla_c_aln <- msa(hla_c_seq, method = "ClustalOmega")
+library(bios2mds)
+HLA_A_alignment <- msaConvert(hla_a_aln, "bios2mds::align")
+HLA_B_alignment <- msaConvert(hla_b_aln, "bios2mds::align")
+HLA_C_alignment <- msaConvert(hla_c_aln, "bios2mds::align")
+HLA_A_as_data <- data.frame(matrix(unlist(HLA_A_alignment), nrow = length(HLA_A_alignment), byrow = T))
+HLA_B_as_data <- data.frame(matrix(unlist(HLA_B_alignment), nrow = length(HLA_B_alignment), byrow = T))
+HLA_C_as_data <- data.frame(matrix(unlist(HLA_C_alignment), nrow = length(HLA_C_alignment), byrow = T))
+HLA_A_combinations <- apply(unname(HLA_A_as_data), 2, combn, m = 2)
+HLA_B_combinations <- apply(unname(HLA_B_as_data), 2, combn, m = 2)
+HLA_C_combinations <- apply(unname(HLA_C_as_data), 2, combn, m = 2)
+mismatches_a <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((HLA_A_combinations[i, ][p] != HLA_A_combinations[z, ][k]) & (HLA_A_combinations[i, ][p] != "-") & (HLA_A_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 365), p = seq(1, 365)))}, i = seq(1, nrow(HLA_A_combinations), 2), z = seq(2, nrow(HLA_A_combinations), 2)) #количество мисматчей для HLA-A
+mismatches_b <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((HLA_B_combinations[i, ][p] != HLA_B_combinations[z, ][k]) & (HLA_B_combinations[i, ][p] != "-") & (HLA_B_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 362), p = seq(1, 362)))}, i = seq(1, nrow(HLA_B_combinations), 2), z = seq(2, nrow(HLA_B_combinations), 2)) #количество мисматчей для HLA-B
+mismatches_c <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((HLA_C_combinations[i, ][p] != HLA_C_combinations[z, ][k]) & (HLA_C_combinations[i, ][p] != "-") & (HLA_C_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 372), p = seq(1, 372)))}, i = seq(1, nrow(HLA_C_combinations), 2), z = seq(2, nrow(HLA_C_combinations), 2)) #количество мисматчей для HLA-C
+
+c <- data.frame(matrix(unlist(HLA_C_alignment), nrow = length(HLA_C_alignment), byrow = T))
+c <- cbind(data.frame(matrix(unlist(str_split(names(HLA_C_alignment), " ")), ncol = 4, byrow = T))$X2, c)
+names(c)[1] <- "name"
+c_combinations <- as.data.frame(apply(unname(c), 2, combn, m = 2))
+
+c_data <- mapply(function(i,z) {as.vector(c(c_combinations[i,][[1]], c_combinations[z,][[1]], sum(mapply(function(k,p) {ifelse((c_combinations[i,][[p]] != c_combinations[z,][[k]]) & (c_combinations[i,][[p]] != "-") & (c_combinations[z,][[k]] != "-"), T, F)}, k = seq(2, 373), p = seq(2, 373)))))}, i = seq(1, nrow(c_combinations), 2), z = seq(2, nrow(c_combinations), 2))
+
+ggplot(as.data.frame(mismatches_a), aes(x = mismatches_a))+
+  geom_histogram(aes(y=..density..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("HLA-A")+
+  geom_density(alpha=.2, fill="#FF0000")+
+  geom_vline(aes(xintercept = median(mismatches_a)), color="#FF0000", linetype="dashed", size=1) #график для HLA-A
+
+ggplot(as.data.frame(mismatches_b), aes(x = mismatches_b))+
+  geom_histogram(aes(y=..density..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("HLA-B")+
+  geom_density(alpha=.2, fill="#00FF00")+
+  geom_vline(aes(xintercept = median(mismatches_b)), color="#00FF00", linetype="dashed", size=1) #график для HLA-B
+
+ggplot(as.data.frame(mismatches_c), aes(x = mismatches_c))+
+  geom_histogram(aes(y=..density..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("HLA-C")+
+  geom_density(alpha=.2, fill="#0000FF")+
+  geom_vline(aes(xintercept = median(mismatches_c)), color="#0000FF", linetype="dashed", size=1) #график для HLA-C
+
+max_len <- max(c(length(mismatches_a), length(mismatches_b), length(mismatches_c)))
+mismatches_data <- data.frame(mismatches_a = c(mismatches_a, rep(NA, max_len - length(mismatches_a))), mismatches_b = c(mismatches_b, rep(NA, max_len - length(mismatches_b))), mismatches_c = c(mismatches_c, rep(NA, max_len - length(mismatches_c))))
+
+names(mismatches_data) <- c("HLA-A", "HLA-B", "HLA-C")
+melt_mis_data <- melt(mismatches_data)
+names(melt_mis_data) <- c("Gene", "Value")
+ggplot(melt_mis_data, aes(x = Value, group = Gene, color=Gene))+
+  geom_density(alpha=0, size = 1.3)+
+  labs(x = "Number of mismatches", y = "Density")+
+  scale_color_manual(values = alpha(rainbow(3), 0.7))+
+  geom_vline(aes(xintercept = median(mismatches_b)), color="#00FF00", linetype="dashed", size=1)+
+  geom_vline(aes(xintercept = median(mismatches_a)), color="#FF0000", linetype="dashed", size=1)+
+  geom_vline(aes(xintercept = median(mismatches_c)), color="#0000FF", linetype="dashed", size=1)+
+  theme_bw()
+
+ggplot(melt_mis_data, aes(x = Gene, y = Value, group = Gene, color=Gene))+
+  geom_violin(trim = T, adjust = 0.9)+
+  scale_color_manual(values = rainbow(3))+
+  theme(legend.title = element_blank())+
+  geom_boxplot(width = .1, aes(fill = Gene))+
+  scale_fill_manual(values = alpha(rainbow(3), 0.7))+
+  stat_summary(fun = median, geom = "point", fill = "white", shape = 22,
+               size = 2.5)+
+  xlab("Gene") + ylab("Number of mismatches") 
+
+
+ggplot(mutate(melt(mismatches_data), variable = fct_rev(as_factor(variable))), aes(x = value, y=variable)) +
+  geom_density_ridges(aes(fill = variable), show.legend = FALSE) + theme_ridges() +
+  scale_fill_manual(values = c("#0000FF", "#00FF00", "#FF0000"))+
+  scale_y_discrete(expand = c(0.01, 0))+
+  scale_x_continuous(expand = c(0.01, 0)) +
+  labs(x = "Number of mismatches", y = "Gene")+
+  theme_minimal()+
+  ggtitle("Mismatches")+
+  theme(plot.title = element_text(hjust = 0.5), plot.margin = unit(c(1, 1, 1, 1), "cm"), axis.text.x = element_text(vjust = 3, margin=margin(t=10)),  axis.text.y = element_text(hjust = 3), text = element_text(size = 15))      
+
+c_data <- as.data.frame(t(unlist(c_data)))
+names(c_data) <- c("seq1", "seq2", "count")
+head(c_data)
+c_data_inverted <- c_data[, c("seq2", "seq1", "count")]
+names(c_data_inverted) <- c("seq1", "seq2", "count")
+c_data_binded <- rbind(c_data, c_data_inverted)
+c_data_binded$count <- as.numeric(c_data_binded$count)
+c_mat <- pivot_wider(c_data_binded, names_from = seq1, values_from = count, values_fill = 0, names_sort = T) #матрица расстояний
+c_mat <- c_mat %>% 
+  arrange(seq2) %>% 
+  column_to_rownames(var="seq2")
+hla_c_UPGMA <- upgma(c_mat)
+plot(hla_c_UPGMA, main="UPGMA") #иерархическая кластеризация
+```
+
+```{r, cache=TRUE}
+library(msa)
+a01_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\A01.fasta")
+a24_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\A24.fasta")
+a68_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\A68.fasta")
+a01_aln <- msa(a01_seq, method = "ClustalOmega")
+a24_aln <- msa(a24_seq, method = "ClustalOmega")
+a68_aln <- msa(a68_seq, method = "ClustalOmega")
+
+library(bios2mds)
+a01_alignment <- msaConvert(a01_aln, "bios2mds::align")
+a24_alignment <- msaConvert(a24_aln, "bios2mds::align")
+a68_alignment <- msaConvert(a68_aln, "bios2mds::align")
+a01_as_data <- data.frame(matrix(unlist(a01_alignment), nrow = length(a01_alignment), byrow = T))
+a24_as_data <- data.frame(matrix(unlist(a24_alignment), nrow = length(a24_alignment), byrow = T))
+a68_as_data <- data.frame(matrix(unlist(a68_alignment), nrow = length(a68_alignment), byrow = T))
+a01_combinations <- apply(unname(a01_as_data), 2, combn, m = 2)
+a24_combinations <- apply(unname(a24_as_data), 2, combn, m = 2)
+a68_combinations <- apply(unname(a68_as_data), 2, combn, m = 2)
+
+mismatches_a01 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((a01_combinations[i, ][p] != a01_combinations[z, ][k]) & (a01_combinations[i, ][p] != "-") & (a01_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 365), p = seq(1, 365)))}, i = seq(1, nrow(a01_combinations), 2), z = seq(2, nrow(a01_combinations), 2))
+mismatches_a24 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((a24_combinations[i, ][p] != a24_combinations[z, ][k]) & (a24_combinations[i, ][p] != "-") & (a24_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 367), p = seq(1, 367)))}, i = seq(1, nrow(a24_combinations), 2), z = seq(2, nrow(a24_combinations), 2))
+mismatches_a68 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((a68_combinations[i, ][p] != a68_combinations[z, ][k]) & (a68_combinations[i, ][p] != "-") & (a68_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 366), p = seq(1, 366)))}, i = seq(1, nrow(a68_combinations), 2), z = seq(2, nrow(a68_combinations), 2))
+
+ggplot(as.data.frame(mismatches_a01), aes(x = mismatches_a01))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("A*01:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_a01)), color="red", linetype="dashed", size=1) #график для A*01
+
+ggplot(as.data.frame(mismatches_a24), aes(x = mismatches_a24))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("A*24:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_a24)), color="red", linetype="dashed", size=1) #график для A*24
+
+ggplot(as.data.frame(mismatches_a68), aes(x = mismatches_a68))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("A*68:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_a68)), color="red", linetype="dashed", size=1) #график для A*68
+
+b27_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\B27.fasta")
+b51_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\B51.fasta")
+b35_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\B35.fasta")
+b27_aln <- msa(b27_seq, method = "ClustalOmega")
+b51_aln <- msa(b51_seq, method = "ClustalOmega")
+b35_aln <- msa(b35_seq, method = "ClustalOmega")
+
+b27_alignment <- msaConvert(b27_aln, "bios2mds::align")
+b51_alignment <- msaConvert(b51_aln, "bios2mds::align")
+b35_alignment <- msaConvert(b35_aln, "bios2mds::align")
+b27_as_data <- data.frame(matrix(unlist(b27_alignment), nrow = length(b27_alignment), byrow = T))
+b51_as_data <- data.frame(matrix(unlist(b51_alignment), nrow = length(b51_alignment), byrow = T))
+b35_as_data <- data.frame(matrix(unlist(b35_alignment), nrow = length(b35_alignment), byrow = T))
+b27_combinations <- apply(unname(b27_as_data), 2, combn, m = 2)
+b51_combinations <- apply(unname(b51_as_data), 2, combn, m = 2)
+b35_combinations <- apply(unname(b35_as_data), 2, combn, m = 2)
+
+mismatches_b27 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((b27_combinations[i, ][p] != b27_combinations[z, ][k]) & (b27_combinations[i, ][p] != "-") & (b27_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 362), p = seq(1, 362)))}, i = seq(1, nrow(b27_combinations), 2), z = seq(2, nrow(b27_combinations), 2))
+mismatches_b51 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((b51_combinations[i, ][p] != b51_combinations[z, ][k]) & (b51_combinations[i, ][p] != "-") & (b51_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 368), p = seq(1, 368)))}, i = seq(1, nrow(b51_combinations), 2), z = seq(2, nrow(b51_combinations), 2))
+mismatches_b35 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((b35_combinations[i, ][p] != b35_combinations[z, ][k]) & (b35_combinations[i, ][p] != "-") & (b35_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 367), p = seq(1, 367)))}, i = seq(1, nrow(b35_combinations), 2), z = seq(2, nrow(b35_combinations), 2))
+
+ggplot(as.data.frame(mismatches_b27), aes(x = mismatches_b27))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("B*27:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_b27)), color="red", linetype="dashed", size=1) #график для B*27
+
+ggplot(as.data.frame(mismatches_b51), aes(x = mismatches_b51))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("B*51:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_b51)), color="red", linetype="dashed", size=1) #график для B*51
+
+ggplot(as.data.frame(mismatches_b35), aes(x = mismatches_b35))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("B*35:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_b35)), color="red", linetype="dashed", size=1) #график для B*35
+
+c12_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\C12.fasta")
+c07_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\C07.fasta")
+c03_seq <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\C03.fasta")
+c12_aln <- msa(c12_seq, method = "ClustalOmega")
+c07_aln <- msa(c07_seq, method = "ClustalOmega")
+c03_aln <- msa(c03_seq, method = "ClustalOmega")
+
+c12_alignment <- msaConvert(c12_aln, "bios2mds::align")
+c07_alignment <- msaConvert(c07_aln, "bios2mds::align")
+c03_alignment <- msaConvert(c03_aln, "bios2mds::align")
+c12_as_data <- data.frame(matrix(unlist(c12_alignment), nrow = length(c12_alignment), byrow = T))
+c07_as_data <- data.frame(matrix(unlist(c07_alignment), nrow = length(c07_alignment), byrow = T))
+c03_as_data <- data.frame(matrix(unlist(c03_alignment), nrow = length(c03_alignment), byrow = T))
+c12_combinations <- apply(unname(c12_as_data), 2, combn, m = 2)
+c07_combinations <- apply(unname(c07_as_data), 2, combn, m = 2)
+c03_combinations <- apply(unname(c03_as_data), 2, combn, m = 2)
+
+mismatches_c12 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((c12_combinations[i, ][p] != c12_combinations[z, ][k]) & (c12_combinations[i, ][p] != "-") & (c12_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 366), p = seq(1, 366)))}, i = seq(1, nrow(c12_combinations), 2), z = seq(2, nrow(c12_combinations), 2))
+mismatches_c07 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((c07_combinations[i, ][p] != c07_combinations[z, ][k]) & (c07_combinations[i, ][p] != "-") & (c07_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 378), p = seq(1, 378)))}, i = seq(1, nrow(c07_combinations), 2), z = seq(2, nrow(c07_combinations), 2))
+mismatches_c03 <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((c03_combinations[i, ][p] != c03_combinations[z, ][k]) & (c03_combinations[i, ][p] != "-") & (c03_combinations[z, ][k] != "-"), T, F)}, k = seq(1, 377), p = seq(1, 377)))}, i = seq(1, nrow(c03_combinations), 2), z = seq(2, nrow(c03_combinations), 2))
+
+ggplot(as.data.frame(mismatches_c12), aes(x = mismatches_c12))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("C*12:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_b27)), color="red", linetype="dashed", size=1) #график для C*12
+
+ggplot(as.data.frame(mismatches_c07), aes(x = mismatches_c07))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("C*07:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_c07)), color="red", linetype="dashed", size=1) #график для C*07
+
+ggplot(as.data.frame(mismatches_c03), aes(x = mismatches_c03))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("C*03:XX")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(mismatches_c03)), color="red", linetype="dashed", size=1) #график для C*03
+
+
+string_set <- readAAStringSet("C:\\Users\\User\\Documents\\python_dir\\unique_filtered.fasta") #уникальные послеодвательности
+string_set <- data.frame(string_set)
+string_set <- as.data.frame(tibble::rownames_to_column(string_set, "description"))
+names(string_set) <- c("description", "sequence")
+library(stringr)
+description <- str_split_fixed(string_set$description, " ", 4)
+description <- select(as.data.frame(description), 1, 2, 3)
+names(description) <- c("ID", "name", "length")
+string_set <- cbind(description, string_set$sequence)
+names(string_set) <- c("ID", "name", "length", "sequence")
+
+mismatch_comp <- function(x, y) {
+  my_sub <- subset(string_set, grepl(x, string_set$name)&(string_set$length > y))
+  my_data <- msa(AAStringSet(my_sub$sequence))
+  my_data <- msaConvert(my_data, "bios2mds::align")
+  my_data <- data.frame(matrix(unlist(my_data), nrow = length(my_data), byrow = T))
+  my_data <- apply(unname(my_data), 2, combn, m = 2)
+  mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((my_data[i, ][p] != my_data[z, ][k]) & (my_data[i, ][p] != "-") & (my_data[z, ][k] != "-"), T, F)}, k = seq(1, ncol(my_data)), p = seq(1, ncol(my_data))))}, i = seq(1, nrow(my_data), 2), z = seq(2, nrow(my_data), 2))
+} #функция для подсчета мисматчей
+
+```
+
+```{r, results="hide", cache=TRUE}
+mismatches_a02 <- mismatch_comp("A\\*02", 350)
+mismatches_a03 <- mismatch_comp("A\\*03", 350)
+mismatches_a11 <- mismatch_comp("A\\*11", 350)
+mismatches_a31 <- mismatch_comp("A\\*31", 350)
+mismatches_a33 <- mismatch_comp("A\\*33", 350)
+mismatches_a26 <- mismatch_comp("A\\*26", 350)
+mismatches_a30 <- mismatch_comp("A\\*30", 350)
+mismatches_a23 <- mismatch_comp("A\\*23", 350)
+mismatches_a29 <- mismatch_comp("A\\*29", 350)
+mismatches_a34 <- mismatch_comp("A\\*34", 350)
+mismatches_a32 <- mismatch_comp("A\\*32", 350)
+mismatches_a74 <- mismatch_comp("A\\*74", 350)
+mismatches_a66 <- mismatch_comp("A\\*66", 350)
+mismatches_a25 <- mismatch_comp("A\\*25", 350)
+mismatches_a36 <- mismatch_comp("A\\*36", 350)
+
+
+
+mismatches_b40 <- mismatch_comp("B\\*40", 350)
+mismatches_b44 <- mismatch_comp("B\\*44", 350)
+mismatches_b07 <- mismatch_comp("B\\*07", 350)
+mismatches_b15 <- mismatch_comp("B\\*15", 350)
+mismatches_b08 <- mismatch_comp("B\\*08", 350)
+mismatches_b58 <- mismatch_comp("B\\*58", 350)
+mismatches_b13 <- mismatch_comp("B\\*13", 350)
+mismatches_b37 <- mismatch_comp("B\\*37", 350)
+mismatches_b46 <- mismatch_comp("B\\*46", 350)
+mismatches_b52 <- mismatch_comp("B\\*52", 350)
+mismatches_b18 <- mismatch_comp("B\\*18", 350)
+mismatches_b53 <- mismatch_comp("B\\*53", 350)
+mismatches_b56 <- mismatch_comp("B\\*56", 350)
+mismatches_b54 <- mismatch_comp("B\\*54", 350)
+mismatches_b14 <- mismatch_comp("B\\*14", 350)
+mismatches_b42 <- mismatch_comp("B\\*42", 350)
+mismatches_b57 <- mismatch_comp("B\\*57", 350)
+mismatches_b55 <- mismatch_comp("B\\*55", 350)
+mismatches_b45 <- mismatch_comp("B\\*45", 350)
+mismatches_b50 <- mismatch_comp("B\\*50", 350)
+mismatches_b38 <- mismatch_comp("B\\*38", 350)
+mismatches_b49 <- mismatch_comp("B\\*49", 350)
+
+
+
+mismatches_c04 <- mismatch_comp("C\\*04", 350)
+mismatches_c01 <- mismatch_comp("C\\*01", 350)
+mismatches_c06 <- mismatch_comp("C\\*06", 350)
+mismatches_c15 <- mismatch_comp("C\\*15", 350)
+mismatches_c08 <- mismatch_comp("C\\*08", 350)
+mismatches_c02 <- mismatch_comp("C\\*02", 350)
+mismatches_c05 <- mismatch_comp("C\\*05", 350)
+mismatches_c14 <- mismatch_comp("C\\*14", 350)
+mismatches_c16 <- mismatch_comp("C\\*16", 350)
+mismatches_c17 <- mismatch_comp("C\\*17", 350)
+mismatches_c18 <- mismatch_comp("C\\*18", 350)
+```
+
+```{r, cache=TRUE}
+require(scales)
+require(reshape2)
+require(ggplot2)
+max_len_a <- max(c(length(mismatches_a01), length(mismatches_a02), length(mismatches_a03), 
+                 length(mismatches_a11), length(mismatches_a23), length(mismatches_a24), 
+                 length(mismatches_a25), length(mismatches_a26), length(mismatches_a29), 
+                 length(mismatches_a30), length(mismatches_a31), length(mismatches_a32), 
+                 length(mismatches_a33), length(mismatches_a68)))
+
+mismatches_data_a <- data.frame(mismatches_a01 = c(mismatches_a01, rep(NA, max_len_a - length(mismatches_a01))), 
+                                mismatches_a02 = c(mismatches_a02, rep(NA, max_len_a - length(mismatches_a02))), 
+                                mismatches_a03 = c(mismatches_a03, rep(NA, max_len_a - length(mismatches_a03))), 
+                                mismatches_a11 = c(mismatches_a11, rep(NA, max_len_a - length(mismatches_a11))), 
+                                mismatches_a24 = c(mismatches_a24, rep(NA, max_len_a - length(mismatches_a24))), 
+                                mismatches_a26 = c(mismatches_a26, rep(NA, max_len_a - length(mismatches_a26))), 
+                                mismatches_a29 = c(mismatches_a29, rep(NA, max_len_a - length(mismatches_a29))), 
+                                mismatches_a30 = c(mismatches_a30, rep(NA, max_len_a - length(mismatches_a30))), 
+                                mismatches_a31 = c(mismatches_a31, rep(NA, max_len_a - length(mismatches_a31))), 
+                                mismatches_a32 = c(mismatches_a32, rep(NA, max_len_a - length(mismatches_a32))), 
+                                mismatches_a33 = c(mismatches_a33, rep(NA, max_len_a - length(mismatches_a33))), 
+                                mismatches_a68 = c(mismatches_a68, rep(NA, max_len_a - length(mismatches_a68))))
+
+names(mismatches_data_a) <- lapply(names(mismatches_data_a), function(x) {
+  test <- x
+  x <-  paste(toupper(substr(test, 12, 12)), "*", substr(test, 13, 14), sep = "")
+})
+
+names(mismatches_data_a) <- c("A*01 (n=165)", "A*02 (n=391)", "A*03 (n=163)", "A*11 (n=155)", "A*24 (n=188)", "A*26 (n=90)", "A*29 (n=68)", "A*30 (n=83)", "A*31 (n=79)", "A*32 (n=68)", "A*33 (n=77)", "A*68 (n=138)") #number of alleles compared
+
+
+mismatches_data_a <- melt(mismatches_data_a)
+mismatches_data_a$value <- as.numeric(mismatches_data_a$value)
+mismatches_data_a$variable <- as.factor(mismatches_data_a$variable)
+
+ggplot(mismatches_data_a, aes(x = value, group = variable, fill=variable))+
+  geom_histogram(binwidth = 1, aes(y = stat(density)),  color = "black")+
+  labs(x = "Number of mismatches", y = "Frequency")+
+  theme_bw()+
+  facet_wrap(~variable, scales = "free_y")+
+  scale_y_continuous(labels = percent )+
+  guides(fill=guide_legend(title="Allele types"))+
+  scale_fill_manual(values = alpha(rainbow(12), 0.7))
+
+ggplot(mismatches_data_a, aes(x = variable, y = value, group = variable))+
+  geom_violin(aes(fill = variable))+
+  theme_bw()+
+  facet_wrap(~variable, scales = "free")+
+  scale_fill_manual(values = alpha(rainbow(12), 0.6))+
+  guides(fill=guide_legend(title="Allele types"))
+
+max_len_b <- max(c(length(mismatches_b07), length(mismatches_b08), length(mismatches_b15), 
+                   length(mismatches_b27), length(mismatches_b35), length(mismatches_b40), 
+                   length(mismatches_b44), length(mismatches_b51), length(mismatches_b18)))
+mismatches_data_b <- data.frame(mismatches_b07 = c(mismatches_b07, rep(NA, max_len_b - length(mismatches_b07))), 
+                                mismatches_b08 = c(mismatches_b08, rep(NA, max_len_b - length(mismatches_b08))), 
+                                mismatches_b15 = c(mismatches_b15, rep(NA, max_len_b - length(mismatches_b15))), 
+                                mismatches_b27 = c(mismatches_b27, rep(NA, max_len_b - length(mismatches_b27))), 
+                                mismatches_b35 = c(mismatches_b35, rep(NA, max_len_b - length(mismatches_b35))), 
+                                mismatches_b40 = c(mismatches_b40, rep(NA, max_len_b - length(mismatches_b40))), 
+                                mismatches_b44 = c(mismatches_b44, rep(NA, max_len_b - length(mismatches_b44))), 
+                                mismatches_b51 = c(mismatches_b51, rep(NA, max_len_b - length(mismatches_b51))), 
+                                mismatches_b18 = c(mismatches_b18, rep(NA, max_len_b - length(mismatches_b18))))
+
+names(mismatches_data_b) <- lapply(names(mismatches_data_b), function(x) {
+  z <- x
+  x <-  paste(toupper(substr(z, 12, 12)), "*", substr(z, 13, 14), sep = "")
+})
+
+names(mismatches_data_b) <- c("B*07 (n=177)", "B*08 (n=128)", "B*15 (n=256)", "B*27 (n=104)", "B*35 (n=234)", "B*40 (n=186)", "B*44 (n=187)", "B*51 (n=141)", "B*18 (n=95)")
+mismatches_data_b <- mismatches_data_b[, c("B*07 (n=177)", "B*08 (n=128)", "B*15 (n=256)", "B*18 (n=95)", "B*27 (n=104)", "B*35 (n=234)", "B*40 (n=186)", "B*44 (n=187)", "B*51 (n=141)")]
+
+mismatches_data_b <- melt(mismatches_data_b)
+mismatches_data_b$value <- as.numeric(mismatches_data_b$value)
+mismatches_data_b$variable <- as.factor(mismatches_data_b$variable)
+
+ggplot(mismatches_data_b, aes(x = value, group = variable, fill=variable))+
+  geom_histogram(binwidth = 1, aes(y = stat(density)),  color = "black")+
+  labs(x = "Number of mismatches", y = "Frequency")+
+  theme_bw()+
+  facet_wrap(~variable, scales = "free_y")+
+  scale_y_continuous(labels = percent )+
+  guides(fill=guide_legend(title="Allele types"))+
+  scale_fill_manual(values = alpha(rainbow(9), 0.7))
+
+ggplot(mismatches_data_b, aes(x = variable, y = value, group = variable))+
+  geom_violin(aes(fill = variable))+
+  theme_bw()+
+  facet_wrap(~variable, scales = "free")+
+  scale_fill_manual(values = alpha(rainbow(9), 0.7))+
+  guides(fill=guide_legend(title="Allele types"))
+
+max_len_c <- max(c(length(mismatches_c01), length(mismatches_c02), length(mismatches_c03), 
+                   length(mismatches_c04), length(mismatches_c05), length(mismatches_c06), 
+                   length(mismatches_c07), length(mismatches_c12), length(mismatches_c15)))
+mismatches_data_c <- data.frame(mismatches_c01 = c(mismatches_c01, rep(NA, max_len_c - length(mismatches_c01))), 
+                                mismatches_c02 = c(mismatches_c02, rep(NA, max_len_c - length(mismatches_c02))), 
+                                mismatches_c03 = c(mismatches_c03, rep(NA, max_len_c - length(mismatches_c03))), 
+                                mismatches_c04 = c(mismatches_c04, rep(NA, max_len_c - length(mismatches_c04))), 
+                                mismatches_c05 = c(mismatches_c05, rep(NA, max_len_c - length(mismatches_c05))), 
+                                mismatches_c06 = c(mismatches_c06, rep(NA, max_len_c - length(mismatches_c06))), 
+                                mismatches_c07 = c(mismatches_c07, rep(NA, max_len_c - length(mismatches_c07))), 
+                                mismatches_c12 = c(mismatches_c12, rep(NA, max_len_c - length(mismatches_c12))), 
+                                mismatches_c15 = c(mismatches_c15, rep(NA, max_len_c - length(mismatches_c15))))
+
+names(mismatches_data_c) <- lapply(names(mismatches_data_c), function(x) {
+  z <- x
+  x <-  paste(toupper(substr(z, 12, 12)), "*", substr(z, 13, 14), sep = "")
+})
+
+names(mismatches_data_c) <- c("C*01 (n=105)", "C*02 (n=112)", "C*03 (n=259)", "C*04 (n=203)", "C*05 (n=135)", "C*06 (n=149)", "C*07 (n=472)", "C*12 (n=167)", "C*15 (n=105)")
+
+mismatches_data_c <- melt(mismatches_data_c)
+mismatches_data_c$value <- as.numeric(mismatches_data_c$value)
+mismatches_data_c$variable <- as.factor(mismatches_data_c$variable)
+
+
+ggplot(mismatches_data_c, aes(x = value, group = variable, fill=variable))+
+  geom_histogram(binwidth = 1, aes(y = stat(density)),  color = "black")+
+  labs(x = "Number of mismatches", y = "Frequency")+
+  theme_bw()+
+  facet_wrap(~variable, scales = "free_y")+
+  scale_y_continuous(labels = percent )+
+  guides(fill=guide_legend(title="Allele types"))+
+  scale_fill_manual(values = alpha(rainbow(9), 0.7))
+
+ggplot(mismatches_data_c, aes(x = variable, y = value, group = variable))+
+  geom_violin(aes(fill = variable))+
+  theme_bw()+
+  facet_wrap(~variable, scales = "free")+
+  scale_fill_manual(values = alpha(rainbow(9), 0.7))+
+  guides(fill=guide_legend(title="Allele types"))
+
+#violin-plots
+
+ggplot(mismatches_data_a, aes(x = variable, y = value, group = variable))+
+  geom_violin(aes(fill = variable), trim = F)+
+  guides(fill=guide_legend(title="Allele types"))+
+  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust=1))+
+  labs(x = "Allele type", y = "Number of mismatches")
+
+ggplot(mismatches_data_b, aes(x = variable, y = value, group = variable))+
+  geom_violin(aes(fill = variable), trim = F)+
+  guides(fill=guide_legend(title="Allele types"))+
+  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust=1))+
+  labs(x = "Allele type", y = "Number of mismatches")
+
+ggplot(mismatches_data_c, aes(x = variable, y = value, group = variable))+
+  geom_violin(aes(fill = variable), trim = F)+
+  guides(fill=guide_legend(title="Allele types"))+
+  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust=1))+
+  labs(x = "Allele type", y = "Number of mismatches")
+
+
+```
+
+```{r, cache=TRUE}
+library(dplyr)
+hla_pdb_sequences <- mutate(hla_pdb_sequences, length = nchar(hla_pdb_sequences$sequence)) 
+
+
+finish_file <- merge(finish_file, distinct(select(general_filtered, 1, 2)), by = "pdb.id") #информация про организм
+data_filtered <- merge(data_filtered, distinct(select(general_filtered, 1, 2)), by = "pdb.id") #информация про организм
+hla_pdb_sequences <- merge(hla_pdb_sequences, distinct(select(general_filtered, 1, 2)), by = "pdb.id") #информация про организм
+
+```
+
+```{r, cache=TRUE}
+names(finish_file) <- c("pdb.id", "chain.id", "chain.type", "region.type", "residue.index", "residue.index.pdb", "residue.ins.code", "species")
+names(hla_pdb_sequences) <- c("pdb.id", "sequence", "length", "species")
+names(data_filtered) <- c("pdb.id", "chain.id.from", "chain.id.to", "residue.index.from", "residue.index.to", "chain.type.from", "chain.type.to", "residue.index", "species")
+```
+
+```{r, cache=TRUE}
+finish_file <- subset(finish_file, species != "Mouse") #удаляем мышиные аллели
+data_filtered <- subset(data_filtered, species != "Mouse") #удаляем мышиные аллели
+hla_pdb_sequences <- subset(hla_pdb_sequences, species != "Mouse") #удаляем мышиные аллели
+
+library(dplyr)
+data_filtered <- distinct(data_filtered)
+
+hla_e <- filter(general_filtered, allele.info == "HLA-E")$pdb.id
+hla_pdb_sequences <- subset(hla_pdb_sequences, !(pdb.id %in% hla_e))
+
+write.csv(hla_pdb_sequences, "HLA_sequences.csv", row.names = F)
+library(msa)
+pdb_with_imgt <- readAAStringSet("C:\\Users\\User\\Desktop\\task from vadim\\pdb_with_imgt.fasta")
+pdb_with_imgt <- msa(pdb_with_imgt, method = "ClustalOmega") #общее выравнивание
+library(bios2mds)
+pdb_with_imgt <- msaConvert(pdb_with_imgt, "bios2mds::align")
+export.fasta(pdb_with_imgt, outfile = "pdb_with_imgt.fasta")
+library(Bios2cor)
+aln_imgt <- import.fasta("C:\\Users\\User\\Documents\\python_dir\\imgt.fasta")
+entropy_imgt <- entropy(aln_imgt, gap_ratio=0.2) #энтропия Шеннона для выравнивания последовательностей из IMGT
+entropy_imgt <- as.data.frame(entropy_imgt)
+entropy_imgt <- as.data.frame(tibble::rownames_to_column(entropy_imgt, "position"))
+head(entropy_imgt)
+aln_pdb <- pdb_with_imgt[grep("pdb", names(pdb_with_imgt))]
+df_pdb <- data.frame(matrix(unlist(aln_pdb), nrow=372))
+names(df_pdb) <- names(aln_pdb)
+library(reshape2)
+long_df_pdb <- melt(df_pdb, measure.vars = names(aln_pdb), variable.name = "name", value.name = "aminoacid")
+long_df_pdb <- group_by(long_df_pdb, name)
+long_df_pdb <- mutate(long_df_pdb, position = seq(1, 372))
+long_df_pdb <- mutate(long_df_pdb, product = ifelse(aminoacid == "-", 0, 1))
+long_df_pdb <- long_df_pdb %>% 
+  group_by(name) %>% 
+  mutate(residue.index = cumsum(product))
+names(entropy_imgt) <- c("position", "entropy")
+entropy_imgt <- data.frame(lapply(entropy_imgt, function(x) as.numeric(x)))
+long_df_pdb <- merge(long_df_pdb, entropy_imgt, by = "position")
+long_df_pdb <- arrange(long_df_pdb, name, position)
+a_data <- filter(long_df_pdb, aminoacid != "-")
+names(a_data) <- c("position","pdb.id","aminoacid","product","residue.index", "entropy" )
+data_filtered$residue.index <- data_filtered$residue.index.from + 1 
+contacts <- arrange(data_filtered, pdb.id, residue.index)
+mhc_contacts <- select(contacts, 1, 7, 8)
+mhc_contacts <- distinct(mhc_contacts)
+a_data <- select(a_data, 1, 2, 5)
+head(a_data)
+defined_contacts <- merge(a_data, mhc_contacts, by = c("pdb.id", "residue.index"), all.x = T)
+
+cdr_data <- filter(defined_contacts, chain.type.to == "TRA" | chain.type.to == "TRB")    #CDR???
+defined_contacts$chain.type.to <- as.factor(defined_contacts$chain.type.to)    #character to factor
+defined_contacts_tcr <- defined_contacts
+library(forcats)
+defined_contacts_tcr$chain.type.to <- defined_contacts_tcr$chain.type.to %>% fct_collapse(TCR = c("TRA", "TRB"))    #два фактора в один
+
+
+temp_data <- filter(data_filtered, chain.type.to == "TRA" | chain.type.to == "TRB")
+human_pdb_vector <- unique(data_filtered$pdb.id)
+temp_resmarkup <- filter(resmarkup_filtered, pdb.id %in% human_pdb_vector)
+temp_resmarkup <- filter(select(resmarkup_filtered, 1, 2, 3, 4), pdb.id %in% human_pdb_vector)
+names(temp_resmarkup) <- c("pdb.id", "chain.id.to", "region.type", "residue.index.to")
+temp_data <- merge(temp_data, temp_resmarkup, by = c("pdb.id", "chain.id.to", "residue.index.to"))
+rm(temp_resmarkup)
+temp_data <- select(temp_data, 1, 7, 8, 10)
+temp_data <- distinct(temp_data)
+cdr_data <- merge(cdr_data, temp_data, by = c("pdb.id", "residue.index", "chain.type.to"))
+rm(temp_data)
+
+
+defined_contacts <- distinct(defined_contacts)
+head(defined_contacts)
+defined_contacts_tcr <- distinct(defined_contacts_tcr)
+test <- subset(defined_contacts_tcr, !(residue.index %in% c(177:278)))
+test <- filter(test, !(pdb.id %in% hla_e))    #eliminating HLA-E
+head(test)
+contact_count <- test %>% 
+  group_by(position) %>% 
+  count(chain.type.to)
+head(contact_count)
+contact_count <- merge(contact_count, entropy_imgt, by = "position")
+TCR_count <- subset(contact_count, chain.type.to == "TCR")
+TCR_count <- select(TCR_count, 1, 3)
+names(TCR_count) <- c("position", "TCR")
+TCR_count <- mutate(TCR_count, tcr_percentage = TCR/129)
+test <- merge(test, TCR_count, by = "position", all.x = T)
+PEPTIDE_count <- subset(contact_count, chain.type.to == "PEPTIDE")
+PEPTIDE_count <- select(PEPTIDE_count, 1, 3)
+names(PEPTIDE_count) <- c("position", "PEPTIDE")
+PEPTIDE_count <- mutate(PEPTIDE_count, pep_percentage = PEPTIDE/129)
+test <- merge(test, PEPTIDE_count, by = "position", all.x = T)
+test <- select(test, position, TCR, PEPTIDE, tcr_percentage, pep_percentage)
+test <- distinct(test)
+test <- merge(test, entropy_imgt, by.x = "position", all.x = T)
+test$tcr_percentage[is.na(test$tcr_percentage)] = 0
+test$pep_percentage[is.na(test$pep_percentage)] = 0
+head(test)
+
+library(ggplot2)
+
+
+ggplot(test, aes(x = position))+
+  geom_area(aes(y = tcr_percentage), fill = "#0073c2", size = 1)+
+  geom_area(aes(y = pep_percentage), fill = "#efc000", size = 1, alpha = 0.7)+
+  geom_tile(aes(fill = entropy, y =rep(-0.12,178), height = 0.2))+
+  scale_fill_gradient2(midpoint = 0.3,low = "#fcefb1", mid = "#b93878", high = "#02010e")+
+  labs(x = "Position", y = "Contact frequency")+
+  theme_bw()+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))
+
+tcr_peptide_data <- melt(select(test, TCR, PEPTIDE, entropy),  id.vars = "entropy", measure.vars = c("TCR", "PEPTIDE")) 
+
+total_count <- tcr_peptide_data %>% 
+  group_by(variable) %>% 
+  summarise(value = sum(value, na.rm=T))
+head(total_count)
+
+test_tcr <- subset(defined_contacts, !(residue.index %in% c(177:278)))
+test_tcr <- filter(test_tcr, !(pdb.id %in% hla_e))
+contact_count_tcr <- test_tcr %>% 
+  group_by(position) %>% 
+  count(chain.type.to)
+head(contact_count_tcr)
+
+library(tidyr)
+
+test_tcr$chain.type.to <- as.factor(test_tcr$chain.type.to)
+tcr_chain_count <- test_tcr %>% 
+  select(1, 4) %>% 
+  group_by(pdb.id, chain.type.to) %>% 
+  mutate(count = n()) %>% 
+  distinct()
+chain_count_wide <- spread(tcr_chain_count, chain.type.to, count)
+head(chain_count_wide)
+
+
+TRA_count <- subset(contact_count_tcr, chain.type.to == "TRA")
+TRB_count <- subset(contact_count_tcr, chain.type.to == "TRB")
+TRA_count <- select(TRA_count, 1, 3)
+TRB_count <- select(TRB_count, 1, 3)
+names(TRA_count) <- c("position", "TRA")
+names(TRB_count) <- c("position", "TRB")
+TRA_count <- mutate(TRA_count, tra_percentage = TRA/129)
+TRB_count <- mutate(TRB_count, trb_percentage = TRB/129)
+test_tcr <- merge(test_tcr, TRA_count, by = "position", all.x = T)
+test_tcr <- merge(test_tcr, TRB_count, by = "position", all.x = T)
+test_tcr <- select(test_tcr, position, TRA, TRB, tra_percentage, trb_percentage)
+test_tcr <- distinct(test_tcr)
+test_tcr <- merge(test_tcr, entropy_imgt, by.x = "position", all.x = T)
+
+tra_trb_data <- melt(select(test_tcr, TRA, TRB, entropy),  id.vars = "entropy", measure.vars = c("TRA", "TRB"))
+
+test_tcr$tra_percentage[is.na(test_tcr$tra_percentage)] = 0
+test_tcr$trb_percentage[is.na(test_tcr$trb_percentage)] = 0
+
+ggplot(filter(test_tcr, position %in% c(70:190)), aes(x = position))+
+  geom_line(aes(y = tra_percentage), color = "#FF4500")+
+  geom_line(aes(y = trb_percentage), color = "#FFA500")+
+  labs(x = "Position", y = "Contact frequency")
+
+total_count_tcr <- tra_trb_data %>% 
+  group_by(variable) %>% 
+  summarise(value = sum(value, na.rm=T))
+
+
+
+#SUBSET (WE DON'T INCLUDE HLA-A2 ALLELES)
+
+hla_a2 <- filter(general_filtered, allele.info == "HLA-A2")$pdb.id
+free_of_a2 <- filter(defined_contacts_tcr, !(pdb.id %in% hla_e))    #eliminating HLA-E
+free_of_a2 <- filter(free_of_a2, !(pdb.id %in% hla_a2))    #eliminating HLA-A2
+free_of_a2 <- subset(free_of_a2, !(residue.index %in% c(85:92)))    #eliminating loop outside peptide-binding groove (not necessary)
+free_of_a2 <- subset(free_of_a2, !(residue.index %in% c(177:278)))    #eliminating alpha3-domain
+contact_count_a2 <- free_of_a2 %>% 
+  group_by(position) %>% 
+  count(chain.type.to)
+TCR_count_a2 <- subset(contact_count_a2, chain.type.to == "TCR")
+TCR_count_a2 <- select(TCR_count_a2, 1, 3)
+names(TCR_count_a2) <- c("position", "TCR")
+TCR_count_a2 <- mutate(TCR_count_a2, tcr_percentage = TCR/41)
+free_of_a2 <- merge(free_of_a2, TCR_count_a2, by = "position", all.x = T)
+PEPTIDE_count_a2 <- subset(contact_count_a2, chain.type.to == "PEPTIDE")
+PEPTIDE_count_a2 <- select(PEPTIDE_count_a2, 1, 3)
+names(PEPTIDE_count_a2) <- c("position", "PEPTIDE")
+PEPTIDE_count_a2 <- mutate(PEPTIDE_count_a2, pep_percentage = PEPTIDE/41)
+free_of_a2 <- merge(free_of_a2, PEPTIDE_count_a2, by = "position", all.x = T)
+free_of_a2 <- select(free_of_a2, position, TCR, PEPTIDE, tcr_percentage, pep_percentage)
+free_of_a2 <- distinct(free_of_a2)
+free_of_a2 <- merge(free_of_a2, entropy_imgt, by.x = "position", all.x = T)
+free_of_a2$tcr_percentage[is.na(free_of_a2$tcr_percentage)] = 0
+free_of_a2$pep_percentage[is.na(free_of_a2$pep_percentage)] = 0
+
+
+tcr_peptide_data_a2 <- melt(select(free_of_a2, TCR, PEPTIDE, entropy),  id.vars = "entropy", measure.vars = c("TCR", "PEPTIDE"))
+
+
+#SUBSET (WE INCLUDE ONLY HLA-A2 ALLELES)
+full_of_a2 <- filter(defined_contacts_tcr, !(pdb.id %in% hla_e))    #eliminating HLA-E
+full_of_a2 <- filter(full_of_a2, pdb.id %in% hla_a2)
+full_of_a2 <- subset(full_of_a2, !(residue.index %in% c(85:92)))    #eliminating loop outside peptide-binding groove (not necessary
+full_of_a2 <- subset(full_of_a2, !(residue.index %in% c(177:278)))    #eliminating alpha3-domain
+contact_count_with_a2 <- full_of_a2 %>%
+  group_by(position) %>% 
+  count(chain.type.to) 
+TCR_count_with_a2 <- subset(contact_count_with_a2, chain.type.to == "TCR")
+TCR_count_with_a2 <- select(TCR_count_with_a2, 1, 3)
+names(TCR_count_with_a2) <- c("position", "TCR")
+TCR_count_with_a2 <- mutate(TCR_count_with_a2, tcr_percentage = TCR/88)
+full_of_a2 <- merge(full_of_a2, TCR_count_with_a2, by = "position", all.x = T)
+PEPTIDE_count_with_a2 <- subset(contact_count_with_a2, chain.type.to == "PEPTIDE")
+PEPTIDE_count_with_a2 <- select(PEPTIDE_count_with_a2, 1, 3)
+names(PEPTIDE_count_with_a2) <- c("position", "PEPTIDE")
+PEPTIDE_count_with_a2 <- mutate(PEPTIDE_count_with_a2, pep_percentage = PEPTIDE/88)
+full_of_a2 <- merge(full_of_a2, PEPTIDE_count_with_a2, by = "position", all.x = T)
+full_of_a2 <- select(full_of_a2, position, TCR, PEPTIDE, tcr_percentage, pep_percentage)
+full_of_a2 <- distinct(full_of_a2)
+full_of_a2 <- merge(full_of_a2, entropy_imgt, by.x = "position", all.x = T)
+full_of_a2$tcr_percentage[is.na(full_of_a2$tcr_percentage)] = 0
+full_of_a2$pep_percentage[is.na(full_of_a2$pep_percentage)] = 0
+
+tcr_peptide_data_with_a2 <- melt(select(full_of_a2, TCR, PEPTIDE, entropy),  id.vars = "entropy", measure.vars = c("TCR", "PEPTIDE"))
+
+
+
+ggplot(filter(free_of_a2, (position %in% c(42:196))), aes(x = position, y = TCR))+
+  geom_point(aes(size = TCR), alpha = 0.5)+
+  scale_size(range = c(3, 9))+
+  geom_text(aes(label=TCR),hjust=0, vjust=0)+
+  ggtitle("HLA-A2 not included")
+
+
+ggplot(filter(full_of_a2, (position %in% c(42:196))), aes(x = position, y = TCR))+
+  geom_point(aes(size = TCR), alpha = 0.5)+
+  scale_size(range = c(3, 9))+
+  geom_text(aes(label=TCR),hjust=0, vjust=0)+
+  ggtitle("Only HLA-A2")
+
+
+pvs_data <- read.csv("C:\\Users\\User\\Documents\\r_dir\\pvs_data.txt", header = F, sep = "")
+pvs_data <- select(pvs_data, 1, 3)
+entropy_comp <- mutate(cbind(entropy_imgt, pvs_data$V3), pvs_data = ifelse(entropy == "NA", entropy, pvs_data$V3))
+entropy_comp <- select(entropy_comp, 1, 2, 4)
+entropy_comp[is.na(entropy_comp)] = 0
+
+ggplot(filter(entropy_comp, position %in% c(60:250)), aes(x = position))+
+  geom_line(aes(y = entropy), color = "red")+
+  geom_line(aes(y = pvs_data), color = "blue")
+
+cor(entropy_comp$entropy, entropy_comp$pvs_data)
+
+bind_comparison <- cbind(select(full_of_a2, position, tcr_percentage), free_of_a2$tcr_percentage)
+names(bind_comparison) <- c("position", "a2_percentage", "rest_percentage")
+
+ggplot(filter(bind_comparison, position %in% c(70:190)), aes(x = position))+
+  geom_line(aes(y = a2_percentage), color = "red")+
+  geom_line(aes(y = rest_percentage), color = "blue")
+
+ggplot(filter(bind_comparison, position %in% c(70:110)), aes(x = position))+
+  geom_path(aes(y = a2_percentage), color = "red")+
+  geom_path(aes(y = rest_percentage), color = "blue")
+```
+
+```{r, cache=TRUE}
+library(ggplot2)
+
+ggplot(tcr_peptide_data, aes(x = entropy, y = value, shape = variable, color = variable))+
+  geom_point(size=2.8)+
+  scale_shape_manual(values=c(16, 2))+
+  theme_bw()+
+  scale_color_manual(values=alpha(c("#00FFFF", "#FF0000"), 0.7))+
+  xlab("Entropy of the position") + ylab("Contact count")
+
+ggplot(total_count, aes(y = value, x = variable, group = variable, fill = variable))+
+  geom_col()+
+  scale_fill_manual(values = alpha(c("#00FFFF", "#FF0000"), 0.8))+
+  theme_bw()+
+  xlab("Chain type") + ylab("Total number of contacts")+
+  guides(fill=guide_legend(title="Chain type"))
+
+ggplot(tra_trb_data, aes(x = entropy, y = value, shape = variable, color = variable))+
+  geom_point(size=2.8)+
+  scale_shape_manual(values=c(16, 16))+
+  theme_bw()+
+  scale_color_manual(values=c("#FF4500", "#FFA500"))+
+  xlab("Entropy of the position") + ylab("Contact count")
+
+ggplot(total_count_tcr, aes(y = value, x = variable, group = variable, fill = variable))+
+  geom_col()+
+  scale_fill_manual(values = alpha(c("#FF4500", "#FFA500"), 0.8))+
+  theme_bw()+
+  xlab("Chain type") + ylab("Total number of contacts")+
+  guides(fill=guide_legend(title="Chain type"))
+
+
+concatenate_hla_a <- c(mismatches_a01, mismatches_a02, mismatches_a03, mismatches_a11, mismatches_a23, 
+                       mismatches_a24, mismatches_a25, mismatches_a26, mismatches_a29, mismatches_a30, 
+                       mismatches_a31, mismatches_a32, mismatches_a33, mismatches_a34, mismatches_a36, 
+                       mismatches_a66, mismatches_a68, mismatches_a74)
+
+ggplot(as.data.frame(concatenate_hla_a), aes(x = concatenate_hla_a))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("HLA-A")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(concatenate_hla_a)), color="red", linetype="dashed", size=1)
+
+concatenate_hla_b <- c(mismatches_b07, mismatches_b08, mismatches_b13, mismatches_b14, mismatches_b15, 
+                       mismatches_b18, mismatches_b27, mismatches_b35, mismatches_b37, mismatches_b38, 
+                       mismatches_b40, mismatches_b42, mismatches_b44, mismatches_b45, mismatches_b46, 
+                       mismatches_b49, mismatches_b50, mismatches_b51, mismatches_b52, mismatches_b53, 
+                       mismatches_b54, mismatches_b55, mismatches_b56, mismatches_b57, mismatches_b58)
+
+ggplot(as.data.frame(concatenate_hla_b), aes(x = concatenate_hla_b))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("HLA-B")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(concatenate_hla_b)), color="red", linetype="dashed", size=1)
+
+
+concatenate_hla_c <- c(mismatches_c01, mismatches_c02, mismatches_c03, mismatches_c04, mismatches_c05, 
+                       mismatches_c06, mismatches_c07, mismatches_c08, mismatches_c12, mismatches_c14, 
+                       mismatches_c15, mismatches_c16, mismatches_c17, mismatches_c18)
+
+ggplot(as.data.frame(concatenate_hla_c), aes(x = concatenate_hla_c))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1)+
+  labs(x = "Number of mismatches", y = "Number of pairs")+
+  ggtitle("HLA-C")+
+  geom_density(alpha=.2, fill="#FF6666")+
+  geom_vline(aes(xintercept = median(concatenate_hla_c)), color="red", linetype="dashed", size=1)
+
+
+library(bios2mds)
+length_check_1 <- import.fasta("C:\\Users\\User\\Documents\\python_dir\\hla_prot.fasta")
+original_len <- unname(sapply(length_check_1, length))
+length_check_2 <- import.fasta("C:\\Users\\User\\Documents\\python_dir\\unique_filtered.fasta")
+filtered_len <- unname(sapply(length_check_2, length))
+
+ggplot(as.data.frame(original_len), aes(x = original_len))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1.5)+
+  labs(x = "length", y = "count")+
+  ggtitle("hla_prot.fasta")
+
+
+ggplot(as.data.frame(filtered_len), aes(x = filtered_len))+
+  geom_histogram(aes(y=..count..), fill = "white", color = "black", binwidth = 1.5)+
+  labs(x = "length", y = "count")+
+  ggtitle("unique_filtered.fasta")
+
+ggplot(chain_count_wide)+
+  geom_point(aes(x = TRB, y = TRA), size = 3)+
+  theme_bw()
+
+library(dplyr)
+
+contact_count_filtered <- dplyr::slice(contact_count, -c(6, 11, 21, 25, 28, 30, 32, 41, 42, 44, 46, 
+                                                  54, 56, 59, 68, 70, 71, 73, 75, 77, 78, 81, 
+                                                  82, 84, 86, 88, 90, 91, 92, 94, 96, 100, 102, 
+                                                  106, 107, 108, 109, 111, 113, 122, 125, 128, 129, 
+                                                  132, 135, 136, 143, 146, 149, 156, 158, 160, 162, 169, 
+                                                  172, 173, 175, 182, 193, 210, 212, 218, 219, 221, 224, 225, 
+                                                  228, 232, 233, 234, 236, 238, 241, 243, 249, 250, 253, 255,                                                     259, 261, 265, 267))    
+contact_count_filtered$chain.type.to <- as.character(contact_count_filtered$chain.type.to)
+contact_count_filtered[is.na(contact_count_filtered)] <- "No contact"
+levels(contact_count_filtered$chain.type.to) <- c("PEPTIDE", "TCR", "No contact")
+contact_count_filtered$chain.type.to <- factor(contact_count_filtered$chain.type.to, levels = c("PEPTIDE", "TCR", "No contact"))
+str(contact_count_filtered)
+
+ggplot(contact_count_filtered, aes(x = chain.type.to, y = entropy))+
+  geom_violin(trim = T, aes(fill = chain.type.to))+
+  geom_boxplot(width = .1, aes(fill = chain.type.to))+
+  geom_quasirandom()+
+  theme_bw()+
+  scale_fill_manual(values = alpha(c("#efc000", "#0073c2", "white"), 0.7))+
+  xlab("Chain type") + ylab("Entropy")+
+  guides(fill=guide_legend(title="Chain type"))+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))+
+  theme(axis.title.x = element_blank()) 
+```
+
+```{r, eval = FALSE}
+library(bio3d)
+protein <- read.pdb("C:\\Users\\User\\Documents\\r_dir\\6mtm.pdb")
+atom_df <- as.data.frame(protein$atom)
+atom_df[atom_df[, "chain"] == "A", ]$b <- distinct(select(filter(defined_contacts, pdb.id == "6mtm_al2.pdb"), pdb.id, residue.index, entropy))$entropy[atom_df[atom_df[, "chain"] == "A", ]$resno]  
+write.pdb(protein, "6mtm_modified.pdb")    #modifying pdb-file required for visualizing highly variable regions
+```
+
+```{r}
+a_data <- filter(long_df_pdb, aminoacid != "-")
+names(a_data) <- c("position","pdb.id","aminoacid","product","residue.index", "entropy" )
+a_data <- select(a_data, 1, 2, 3, 5)
+defined_contacts <- merge(a_data, mhc_contacts, by = c("pdb.id", "residue.index"), all.x = T)
+defined_contacts <- distinct(defined_contacts)
+defined_contacts <- merge(defined_contacts, entropy_imgt, by = "position")
+defined_contacts <- arrange(defined_contacts, pdb.id, position)
+pep_only <- filter(defined_contacts, chain.type.to == "PEPTIDE")
+pep_only <- filter(pep_only, !(pdb.id %in% hla_e))
+pseudo <- summarise(group_by(pep_only, pdb.id), pseudosequence = paste(aminoacid, collapse = ""))
+
+imgt_as_data <- data.frame(matrix(unlist(aln_imgt), nrow = 91, ncol = 372, byrow = T))
+
+library(Bios2cor)
+total_aln <- import.fasta("C:\\Users\\User\\Documents\\r_dir\\total_aln_mod.fasta")
+total_aln_pdb <- total_aln[grep("pdb", names(total_aln))]
+total_df_pdb <- data.frame(matrix(unlist(total_aln_pdb), nrow=378))
+names(total_df_pdb) <- names(total_aln_pdb)
+library(reshape2)
+total_long_df_pdb <- melt(total_df_pdb, measure.vars = names(total_aln_pdb), variable.name = "name", value.name = "aminoacid")
+total_long_df_pdb <- group_by(total_long_df_pdb, name)
+total_long_df_pdb <- mutate(total_long_df_pdb, position = seq(1, 378))
+total_long_df_pdb <- mutate(total_long_df_pdb, product = ifelse(aminoacid == "-", 0, 1))
+total_long_df_pdb <- total_long_df_pdb %>% 
+  group_by(name) %>% 
+  mutate(residue.index = cumsum(product))
+total_a_data <- filter(total_long_df_pdb, aminoacid != "-")
+total_a_data <- select(total_a_data, name, aminoacid, position, residue.index)
+names(total_a_data) <- c("pdb.id","aminoacid","position","residue.index")
+total_defined_contacts <- merge(total_a_data, mhc_contacts, by = c("pdb.id", "residue.index"), all.x = T)
+
+total_defined_contacts$chain.type.to <- as.factor(total_defined_contacts$chain.type.to)    #character to factor
+library(forcats)
+total_defined_contacts$chain.type.to <- total_defined_contacts$chain.type.to %>% fct_collapse(TCR = c("TRA", "TRB"))    
+total_defined_contacts <- distinct(total_defined_contacts)
+total_test <- subset(total_defined_contacts, !(residue.index %in% c(85:92)))
+total_test <- subset(total_test, !(residue.index %in% c(177:278)))
+total_test <- filter(total_test, !(pdb.id %in% hla_e))
+
+total_contact_count <- total_defined_contacts %>% 
+  group_by(position) %>% 
+  count(chain.type.to)
+total_contact_count$chain.type.to <- total_contact_count$chain.type.to %>% fct_collapse(TCR = c("TRA", "TRB"))
+total_TCR_count <- subset(total_contact_count, chain.type.to == "TCR")
+total_TCR_count <- select(total_TCR_count, 1, 3)
+names(total_TCR_count) <- c("position", "TCR")
+total_TCR_count <- mutate(total_TCR_count, tcr_percentage = TCR/129)
+total_defined_contacts <- merge(total_defined_contacts, total_TCR_count, by = "position", all.x = T)
+total_defined_contacts <- select(total_defined_contacts, position, TCR, tcr_percentage)
+total_defined_contacts <- distinct(total_defined_contacts)
+
+total_imgt <- total_aln[grep(":", names(total_aln))]
+total_imgt_as_data <- data.frame(matrix(unlist(total_imgt), ncol = 378, byrow = T))
+
+pseudo_pep_seq <- function(thold) {
+  position_vec <- filter(total_contact_count, chain.type.to == "PEPTIDE", n/129 >= thold)$position
+  imgt_pep_pseudo <- select(total_imgt_as_data, position_vec)
+  imgt_pep_pseudo <- cbind(names(total_imgt), imgt_pep_pseudo)
+  cols <- names(imgt_pep_pseudo)[-1]
+  imgt_pep_pseudo$pseudosequence <- apply(imgt_pep_pseudo[, cols], 1, paste, collapse = "")
+  imgt_pep_pseudo <- imgt_pep_pseudo[, !(names(imgt_pep_pseudo) %in% cols)]
+  imgt_pep_pseudo
+}    #function for peptide-contacting motif assembly
+
+tr_data <- pseudo_pep_seq(0.1)    #choosing threshold of contact frequency
+unique(lapply(tr_data$pseudosequence, nchar))    #checking whether pseudosequence lengths are equal
+
+
+pseudo_tcr_seq <- function(thold) {
+  position_vec <- filter(total_contact_count, chain.type.to == "TCR", n/129 >= thold)$position
+  imgt_tcr_pseudo <- select(total_imgt_as_data, position_vec)
+  imgt_tcr_pseudo <- cbind(names(total_imgt), imgt_tcr_pseudo)
+  cols <- names(imgt_tcr_pseudo)[-1]
+  imgt_tcr_pseudo$pseudosequence <- apply(imgt_tcr_pseudo[, cols], 1, paste, collapse = "")
+  imgt_tcr_pseudo <- imgt_tcr_pseudo[, !(names(imgt_tcr_pseudo) %in% cols)]
+  imgt_tcr_pseudo
+}    #function for TCR-contacting motif assembly
+
+tr_data_tcr <- pseudo_tcr_seq(0.69)    #choosing threshold of contact frequency
+unique(lapply(tr_data_tcr$pseudosequence, nchar))    #checking whether pseudosequence lengths are equal
+head(tr_data_tcr)
+
+names(tr_data)[1] <- "names"
+CIWD_sorted <- read.csv("C:\\Users\\User\\Documents\\r_dir\\CIWD_sorted.csv", skipNul = T, header = F, sep = ";")    #CIWD dataset
+CIWD_sorted <- dplyr::slice(CIWD_sorted, seq(1:nrow(CIWD_sorted))[!grepl("G", CIWD_sorted$V1)])    #eliminating records containing "G"
+CIWD_sorted$V1 <- lapply(CIWD_sorted$V1, function(x) {
+  x <- strsplit(x, " ")[[1]][1]
+}) #modifying first column
+
+CIWD_sorted <- dplyr::slice(CIWD_sorted, seq(1:nrow(CIWD_sorted))[!grepl("CODE", CIWD_sorted$V1)])    #eliminating СODE
+CIWD_sorted$V1 <- lapply(CIWD_sorted$V1, function(x) {substr(x, 1, 7)})    #leaving only first and second digit in allele name
+
+CIWD_sorted <- CIWD_sorted[!duplicated(CIWD_sorted$V1), ]     #removing duplicates
+rownames(CIWD_sorted) <- seq(length=nrow(CIWD_sorted))    #renumbering rows 
+CIWD_sorted <- dplyr::slice(CIWD_sorted, seq(1:100))    #taking top 100 alleles
+
+elect_seq <- data.frame(names = character(), pseudosequence = character())    #making predataset
+elect_seq[1, ] <- c("name", "pseudosequence")   
+for (z in CIWD_sorted$V1) {
+  for (i in tr_data$names) {
+    if (grepl(z, i, fixed = T) == isTRUE(T)) {
+      elect_seq <- rbind(elect_seq, unlist(unname((tr_data[seq(1:nrow(tr_data))[tr_data$names == i], ]))))
+      break
+    }
+  }
+}    #adding pseudosequences of selected alleles to dataframe (+ names)
+
+elect_seq <- dplyr::slice(elect_seq, -1)    #removing excess row
+elect_seq[76, ] <- unname(filter(tr_data, names(total_imgt) == "B*15:17:01:01"))    #instead of B*15:173
+
+library(stringr)
+seq_to_combin <- as.data.frame(str_split_fixed(elect_seq$pseudosequence, "", 41))
+seq_to_combin <- cbind(elect_seq$names, seq_to_combin)
+seq_to_combin <- as.data.frame(apply(unname(seq_to_combin), 2, combn, m = 2))    #all possible pairs (for further comparison)
+seq_distances <- as.data.frame(mapply(function(i,z) {as.vector(c(seq_to_combin[i,][[1]], seq_to_combin[z,][[1]], sum(mapply(function(k,p) {ifelse((seq_to_combin[i,][[p]] != seq_to_combin[z,][[k]]) & (seq_to_combin[i,][[p]] != "-") & (seq_to_combin[z,][[k]] != "-"), T, F)}, k = seq(2, 42), p = seq(2, 42)))))}, i = seq(1, nrow(seq_to_combin), 2), z = seq(2, nrow(seq_to_combin), 2)))    #function for computing distances
+seq_distances <- as.data.frame(t(seq_distances))
+
+elect_seq_tcr <- data.frame(names = character(), pseudosequence = character())
+elect_seq_tcr[1, ] <- c("name", "pseudosequence")
+
+for (z in CIWD_sorted$V1) {
+  for (i in tr_data_tcr$names) {
+    if (grepl(z, i, fixed = T) == isTRUE(T)) {
+      elect_seq_tcr <- rbind(elect_seq_tcr, unlist(unname((tr_data_tcr[seq(1:nrow(tr_data_tcr))[tr_data_tcr$names == i], ]))))
+      break
+    }
+  }
+}
+
+elect_seq_tcr <- dplyr::slice(elect_seq_tcr, -1)    
+elect_seq_tcr[76, ] <- unname(filter(tr_data_tcr, names(total_imgt) == "B*15:17:01:01"))    #instead of B*15:173
+unique(lapply(elect_seq_tcr$pseudosequence, nchar))    #checking whether pseudosequence lengths are equal 
+
+
+seq_to_combin_tcr <- as.data.frame(str_split_fixed(elect_seq_tcr$pseudosequence, "", 13))
+seq_to_combin_tcr <- cbind(elect_seq_tcr$names, seq_to_combin_tcr)
+seq_to_combin_tcr <- as.data.frame(apply(unname(seq_to_combin_tcr), 2, combn, m = 2))
+seq_distances_tcr <- as.data.frame(mapply(function(i,z) {as.vector(c(seq_to_combin_tcr[i,][[1]], seq_to_combin_tcr[z,][[1]], sum(mapply(function(k,p) {ifelse((seq_to_combin_tcr[i,][[p]] != seq_to_combin_tcr[z,][[k]]) & (seq_to_combin_tcr[i,][[p]] != "-") & (seq_to_combin_tcr[z,][[k]] != "-"), T, F)}, k = seq(2, 14), p = seq(2, 14)))))}, i = seq(1, nrow(seq_to_combin_tcr), 2), z = seq(2, nrow(seq_to_combin_tcr), 2)))
+seq_distances_tcr<-as.data.frame(t(seq_distances_tcr))
+
+names(seq_distances) <- c("seq1", "seq2", "pep_dist")
+names(seq_distances_tcr) <- c("seq1", "seq2", "tcr_dist")
+pseudo_merged <- merge(seq_distances, seq_distances_tcr, by = c("seq1", "seq2"))    #distance dataframe
+
+library(ggplot2)
+
+pseudo_merged$pep_dist <- as.integer(pseudo_merged$pep_dist)
+pseudo_merged$tcr_dist <- as.integer(pseudo_merged$tcr_dist)
+pseudo_merged <- mutate(pseudo_merged, pep_mut = pep_dist/41, tcr_mut = tcr_dist/13)    #length scaling 
+
+library(tidyverse)
+pseudo_merged_paired <- pseudo_merged %>% 
+  unite(pair, c("seq1", "seq2"))
+
+library(car)
+scatterplot(tcr_mut ~ pep_mut, data = pseudo_merged)
+scatterplot(tcr_dist ~ pep_dist, data = pseudo_merged)
+
+pseudo_merged_paired <- pseudo_merged_paired %>% group_by(pep_dist, tcr_dist) %>% mutate(n = n())
+
+ggplot(pseudo_merged_paired, aes(x = pep_mut, y = tcr_mut))+
+  geom_point(aes(size = n))+
+  geom_smooth(method = "lm", formula = y ~ x - 1)+
+  theme_bw()+
+  geom_abline(intercept=0, slope=1)    #scatter-plot
+
+similar_by_tcr <- filter(pseudo_merged_paired, tcr_mut == 0, pep_mut > 0.25)    #significant difference in peptide-contacting motif, but similar TCR-contacting motif
+
+
+library(stringr)
+
+filter(elect_seq_tcr, names %in% unique(c(str_split_fixed(similar_by_tcr$pair, "_", 2)[,1], str_split_fixed(similar_by_tcr$pair, "_", 2)[,2]))) %>% 
+  group_split(pseudosequence)    #three groups by TCR-pseudosequence
+
+pseudo_merged_trial <- pseudo_merged 
+pseudo_merged_trial$seq1 <- lapply(pseudo_merged_trial$seq1, function(x) {substr(x, 1, 1)}) 
+pseudo_merged_trial$seq2 <- lapply(pseudo_merged_trial$seq2, function(x) {substr(x, 1, 1)}) 
+pseudo_merged_trial <- pseudo_merged_trial %>% 
+  unite(pair, c("seq1", "seq2"))
+
+pseudo_merged_paired <- cbind(pseudo_merged_paired, pseudo_merged_trial$pair)
+pseudo_merged_paired <- dplyr::rename(pseudo_merged_paired, gene_pair = ...7)
+
+pseudo_merged_paired[pseudo_merged_paired == "B_A"] <- "A_B"
+pseudo_merged_paired[pseudo_merged_paired == "C_B"] <- "B_C"
+pseudo_merged_paired[pseudo_merged_paired == "C_A"] <- "A_C"
+
+pseudo_merged_paired_new <- pseudo_merged_paired              # Replicate data
+pseudo_merged_paired_new$gene_pair <- factor(pseudo_merged_paired_new$gene_pair,      # Reordering group factor levels
+                                             levels = c("A_A", "B_B", "C_C", "A_B", "B_C", "A_C"))
+
+
+ggplot(pseudo_merged_paired_new, aes(x = pep_mut, y = tcr_mut,  col = gene_pair))+    #facet по парам сравниваемых генов
+  geom_point(size=0.9, position=position_jitter(h=0.01, w=0.01))+
+  theme_bw()+
+  facet_wrap(.~gene_pair)+
+  geom_smooth(method = "lm", formula = y ~ x - 1)+
+  geom_abline(intercept=0, slope=1)+
+  ylab("TCR distance") + xlab("Peptide distance")+
+  scale_fill_manual(values = alpha(rainbow(6), 0.7))+
+  scale_color_manual(values = alpha(rainbow(6), 0.5))
+
+ggplot(filter(pseudo_merged_paired, gene_pair %in% c("A_A", "B_B", "C_C")), aes(x = pep_mut, y = tcr_mut, col = gene_pair))+
+  geom_point(size=2, position=position_jitter(h=0.007, w=0.02))+
+  geom_smooth(method = "lm", formula = y ~ x - 1)+
+  theme_bw()+
+  scale_color_manual(values = alpha(c("#f35e5a", "#17b12b", "#5581fc"), 0.7))+
+  ylab("TCR distance") + xlab("Peptide distance")+
+  guides(fill=guide_legend(title="Gene pair"))+
+  geom_abline(intercept=0, slope=1) +
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))
+  #график для A_A, B_B и C_C
+
+to_build_dist <- filter(tr_data_tcr, names(total_imgt) %in% unique(c(str_split_fixed(similar_by_tcr$pair, "_", 2)[,1], str_split_fixed(similar_by_tcr$pair, "_", 2)[,2]))
+)
+
+for (z in unlist(filter(filter(CIWD_sorted, grepl("B", V1)), !(V1 %in% unlist(lapply(unique(c(str_split_fixed(similar_by_tcr$pair, "_", 2)[,1], str_split_fixed(similar_by_tcr$pair, "_", 2)[,2])), function(x) {substr(x, 1, 7)}))))$V1)) {
+  for (i in tr_data_tcr$names) {
+    if (grepl(z, i, fixed = T) == isTRUE(T)) {
+      to_build_dist <- rbind(to_build_dist, unlist(unname((tr_data_tcr[seq(1:nrow(tr_data_tcr))[tr_data_tcr$`names(total_imgt)` == i], ]))))
+      break
+    }
+  }
+}    #adding some B-alleles for the tree
+
+to_build_dist[39, ] <- unname(filter(tr_data_tcr, names(total_imgt) == "B*15:17:01:01"))    #instead of B*15:173
+
+to_build_dist <- rbind(to_build_dist, filter(tr_data_tcr, names(total_imgt) == "A*32:30:02"))    #adding outgroup
+dist_broad.fasta = dataframe2fas(to_build_dist, file="dist_broad.fasta") 
+
+library(phylogram)
+x_tree <- read.dendrogram(text = "((((((((((('B*07:02:06','B*07:05:01:01'),'B*42:01:03'),'B*08:01:05'),('B*40:02:11',('B*40:01:09','B*41:01:04'))),('B*18:01:03',('B*38:01:01:01',(('B*14:01:01:01','B*14:02:01:01'),'B*39:06:01:01')))),(('B*35:02:01:01','B*51:01:19'),('B*55:01:01:01',('B*15:03:01:01',('B*15:02:01:01',('B*15:01:20','B*46:01:01:01')))))),(('B*45:01:01:01','B*49:01:01:01'),('B*13:02:04',('B*47:01:02','B*44:05:01:01')))),'B*37:01:01:01'),('B*27:05:25','B*27:02:01:01')),('B*15:17:01:01','B*58:01:05')),'A*32:30:02');
+")    #tree built in MEGA (a little bit reducted)
+plot(x_tree, yaxt ="n")
+
+
+
+bdist <- readAAStringSet("dist_broad.fasta")
+bdist_matrix <- DistanceMatrix(bdist, type="dist")
+bclust <- hclust(bdist_matrix)
+bdend <- as.dendrogram(bclust)
+plot(bdend, yaxt = "n")
+bclust
+
+
+a_freq_motif <- filter(tr_data_tcr, names(total_imgt) %in% c("A*24:02:01:01", "A*02:01:01:01", "A*11:01:01:01", 
+                                                             "A*01:01:01:01", "A*03:01:01:01", "A*31:01:02:01", 
+                                                             "A*33:03:01:01", "A*26:01:01:01", "A*30:01:01:01", 
+                                                             "A*23:01:01:01", "A*68:01:01:01", "A*29:02:01:01", 
+                                                             "A*34:01:01:01", "A*32:01:01:01", "A*74:01:01:01", 
+                                                             "A*66:01:01:01", "A*25:01:01:01", "A*36:01:01:01"))
+a_freq_motif<- str_split_fixed(a_freq_motif$pseudosequence, "", 13)
+a_freq_motif <- as.data.frame(apply(unname(a_freq_motif), 2, combn, m = 2))
+
+mismatches_a_tcr <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((a_freq_motif[i, ][p] != a_freq_motif[z, ][k]) & (a_freq_motif[i, ][p] != "-") & (a_freq_motif[z, ][k] != "-"), T, F)}, k = seq(1, 13), p = seq(1, 13)))}, i = seq(1, nrow(a_freq_motif), 2), z = seq(2, nrow(a_freq_motif), 2))
+
+
+b_freq_motif <- filter(tr_data_tcr, names(total_imgt) %in% c("B*35:01:01:01", "B*51:01:01:01", "B*40:01:01", 
+                                             "B*44:03:01:01", "B*07:02:01:01", "B*15:01:01:01", 
+                                             "B*08:01:01:01", "B*58:01:01:01", "B*13:01:01:01", 
+                                             "B*37:01:01:01", "B*46:01:01:01", "B*52:01:01:01", 
+                                             "B*18:01:01:01", "B*53:01:01:01", "B*56:01:01:01", 
+                                             "B*54:01:01:01", "B*27:05:02:01", "B*14:02:01:01",
+                                             "B*42:01:01:01", "B*57:01:01:01", "B*55:02:01:01", 
+                                             "B*45:01:01:01", "B*50:01:01:01", "B*38:02:01:01", 
+                                             "B*49:01:01:01"))
+b_freq_motif<- str_split_fixed(b_freq_motif$pseudosequence, "", 13)
+b_freq_motif <- as.data.frame(apply(unname(b_freq_motif), 2, combn, m = 2))
+
+
+mismatches_b_tcr <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((b_freq_motif[i, ][p] != b_freq_motif[z, ][k]) & (b_freq_motif[i, ][p] != "-") & (b_freq_motif[z, ][k] != "-"), T, F)}, k = seq(1, 13), p = seq(1, 13)))}, i = seq(1, nrow(b_freq_motif), 2), z = seq(2, nrow(b_freq_motif), 2))
+
+
+c_freq_motif <- filter(tr_data_tcr, names(total_imgt) %in% c("C*07:02:01:01", "C*04:01:01:01", "C*03:04:01:01", 
+                                                             "C*01:02:01:01", "C*06:02:01:01", "C*08:01:01:01",
+                                                             "C*15:02:01:01", "C*12:02:01", "C*02:02:01",
+                                                             "C*05:01:01:01", "C*14:02:01:01", "C*16:01:01:01", 
+                                                             "C*17:01:01:02", "C*18:01:01:01"))
+c_freq_motif<- str_split_fixed(c_freq_motif$pseudosequence, "", 13)
+c_freq_motif <- as.data.frame(apply(unname(c_freq_motif), 2, combn, m = 2))
+
+
+mismatches_c_tcr <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((c_freq_motif[i, ][p] != c_freq_motif[z, ][k]) & (c_freq_motif[i, ][p] != "-") & (c_freq_motif[z, ][k] != "-"), T, F)}, k = seq(1, 13), p = seq(1, 13)))}, i = seq(1, nrow(c_freq_motif), 2), z = seq(2, nrow(c_freq_motif), 2))
+
+
+max_len_tcr <- max(c(length(mismatches_a_tcr), length(mismatches_b_tcr), length(mismatches_c_tcr)))
+mismatches_data_tcr <- data.frame(mismatches_a_tcr= c(mismatches_a_tcr, rep(NA, max_len_tcr - length(mismatches_a_tcr))), mismatches_b_tcr = c(mismatches_b_tcr, rep(NA, max_len_tcr - length(mismatches_b_tcr))), mismatches_c_tcr = c(mismatches_c_tcr, rep(NA, max_len_tcr - length(mismatches_c_tcr))))
+names(mismatches_data_tcr) <- c("HLA-A", "HLA-B", "HLA-C")
+melt_mis_data_tcr <- melt(mismatches_data_tcr)
+names(melt_mis_data_tcr) <- c("Gene", "Value")
+
+ggplot(melt_mis_data_tcr, aes(x = Value, group = Gene, color=Gene))+
+  geom_density(alpha=0, size = 1.7, adjust =2.7)+
+  labs(x = "Number of mismatches", y = "Density")+
+  geom_vline(aes(xintercept = median(mismatches_b_tcr)), color="#17b12b", linetype="dashed", size=1)+
+  geom_vline(aes(xintercept = median(mismatches_a_tcr)), color="#f35e5a", linetype="dashed", size=1)+
+  geom_vline(aes(xintercept = median(mismatches_c_tcr)), color="#5581fc", linetype="dashed", size=1)+
+  scale_color_manual(values = c("#f35e5a","#17b12b", "#5581fc"))+
+  theme_bw()+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))
+
+
+
+
+
+a_freq_motif_pep <- filter(tr_data, names(total_imgt) %in% c("A*24:02:01:01", "A*02:01:01:01", "A*11:01:01:01", 
+                                                             "A*01:01:01:01", "A*03:01:01:01", "A*31:01:02:01", 
+                                                             "A*33:03:01:01", "A*26:01:01:01", "A*30:01:01:01", 
+                                                             "A*23:01:01:01", "A*68:01:01:01", "A*29:02:01:01", 
+                                                             "A*34:01:01:01", "A*32:01:01:01", "A*74:01:01:01", 
+                                                             "A*66:01:01:01", "A*25:01:01:01", "A*36:01:01:01"))
+a_freq_motif_pep<- str_split_fixed(a_freq_motif_pep$pseudosequence, "", 41)
+a_freq_motif_pep <- as.data.frame(apply(unname(a_freq_motif_pep), 2, combn, m = 2))
+
+mismatches_a_pep <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((a_freq_motif_pep[i, ][p] != a_freq_motif_pep[z, ][k]) & (a_freq_motif_pep[i, ][p] != "-") & (a_freq_motif_pep[z, ][k] != "-"), T, F)}, k = seq(1, 41), p = seq(1, 41)))}, i = seq(1, nrow(a_freq_motif_pep), 2), z = seq(2, nrow(a_freq_motif_pep), 2))
+
+
+b_freq_motif_pep <- filter(tr_data, names(total_imgt) %in% c("B*35:01:01:01", "B*51:01:01:01", "B*40:01:01", 
+                                                             "B*44:03:01:01", "B*07:02:01:01", "B*15:01:01:01", 
+                                                             "B*08:01:01:01", "B*58:01:01:01", "B*13:01:01:01", 
+                                                             "B*37:01:01:01", "B*46:01:01:01", "B*52:01:01:01", 
+                                                             "B*18:01:01:01", "B*53:01:01:01", "B*56:01:01:01", 
+                                                             "B*54:01:01:01", "B*27:05:02:01", "B*14:02:01:01",
+                                                             "B*42:01:01:01", "B*57:01:01:01", "B*55:02:01:01", 
+                                                             "B*45:01:01:01", "B*50:01:01:01", "B*38:02:01:01", 
+                                                             "B*49:01:01:01"))
+b_freq_motif_pep<- str_split_fixed(b_freq_motif_pep$pseudosequence, "", 41)
+b_freq_motif_pep <- as.data.frame(apply(unname(b_freq_motif_pep), 2, combn, m = 2))
+
+
+mismatches_b_pep <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((b_freq_motif_pep[i, ][p] != b_freq_motif_pep[z, ][k]) & (b_freq_motif_pep[i, ][p] != "-") & (b_freq_motif_pep[z, ][k] != "-"), T, F)}, k = seq(1, 41), p = seq(1, 41)))}, i = seq(1, nrow(b_freq_motif_pep), 2), z = seq(2, nrow(b_freq_motif_pep), 2))
+
+
+c_freq_motif_pep <- filter(tr_data, names(total_imgt) %in% c("C*07:02:01:01", "C*04:01:01:01", "C*03:04:01:01", 
+                                                             "C*01:02:01:01", "C*06:02:01:01", "C*08:01:01:01",
+                                                             "C*15:02:01:01", "C*12:02:01", "C*02:02:01",
+                                                             "C*05:01:01:01", "C*14:02:01:01", "C*16:01:01:01", 
+                                                             "C*17:01:01:02", "C*18:01:01:01"))
+c_freq_motif_pep<- str_split_fixed(c_freq_motif_pep$pseudosequence, "", 41)
+c_freq_motif_pep <- as.data.frame(apply(unname(c_freq_motif_pep), 2, combn, m = 2))
+
+
+mismatches_c_pep <- mapply(function(i,z) {sum(mapply(function(k,p) {ifelse((c_freq_motif_pep[i, ][p] != c_freq_motif_pep[z, ][k]) & (c_freq_motif_pep[i, ][p] != "-") & (c_freq_motif_pep[z, ][k] != "-"), T, F)}, k = seq(1, 41), p = seq(1, 41)))}, i = seq(1, nrow(c_freq_motif_pep), 2), z = seq(2, nrow(c_freq_motif_pep), 2))
+
+
+max_len_pep <- max(c(length(mismatches_a_pep), length(mismatches_b_pep), length(mismatches_c_pep)))
+mismatches_data_pep <- data.frame(mismatches_a_pep= c(mismatches_a_pep, rep(NA, max_len_pep - length(mismatches_a_pep))), mismatches_b_pep = c(mismatches_b_pep, rep(NA, max_len_pep - length(mismatches_b_pep))), mismatches_c_pep = c(mismatches_c_pep, rep(NA, max_len_pep - length(mismatches_c_pep))))
+names(mismatches_data_pep) <- c("HLA-A", "HLA-B", "HLA-C")
+melt_mis_data_pep <- melt(mismatches_data_pep)
+names(melt_mis_data_pep) <- c("Gene", "Value")
+
+ggplot(melt_mis_data_pep, aes(x = Value, group = Gene, color=Gene))+
+  geom_density(alpha=0, size = 1.7, adjust = 1.6)+
+  labs(x = "Number of mismatches", y = "Density")+
+  geom_vline(aes(xintercept = median(mismatches_b_pep)), color="#17b12b", linetype="dashed", size=1)+
+  geom_vline(aes(xintercept = median(mismatches_a_pep)), color="#f35e5a", linetype="dashed", size=1)+
+  geom_vline(aes(xintercept = median(mismatches_c_pep)), color="#5581fc", linetype="dashed", size=1)+
+  scale_color_manual(values = c("#f35e5a","#17b12b", "#5581fc"))+
+  theme_bw()+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))
+
+
+###    Making pseudosequence logo
+
+library(ggseqlogo)
+require(ggplot2)
+
+data(ggseqlogo_sample)
+
+ggseqlogo("RQITQTEAEQAYL", seq_type='aa' )+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))+
+  theme(axis.title.x = element_blank())+
+  theme(legend.position="none")+
+  annotate('rect', xmin = 3.5, xmax = 4.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')+
+  annotate('rect', xmin = 12.5, xmax = 13.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')
+
+ggseqlogo("RQITQTEAEQAYT", seq_type='aa' )+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))+
+  theme(axis.title.x = element_blank())+
+  theme(legend.position="none")+
+  annotate('rect', xmin = 3.5, xmax = 4.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')+
+  annotate('rect', xmin = 12.5, xmax = 13.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')
+
+
+
+ggseqlogo("RQITQTEAEQAYE", seq_type='aa' )+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))+
+  theme(axis.title.x = element_blank())+
+  theme(legend.position="none")+
+  annotate('rect', xmin = 3.5, xmax = 4.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')+
+  annotate('rect', xmin = 12.5, xmax = 13.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')
+
+
+ggseqlogo("RQIAQTEAEQAYE", seq_type='aa' )+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))+
+  theme(axis.title.x = element_blank())+
+  theme(legend.position="none")+
+  annotate('rect', xmin = 3.5, xmax = 4.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')+
+  annotate('rect', xmin = 12.5, xmax = 13.5, ymin = -0.05, ymax = 2.1, alpha = .1, col='black', fill='red')
+
+
+ggseqlogo(c("RQIAQTEAEQAYT", "RQIAQTEAEQAYT", "RQITQTEAEQTYT", 
+            "RQITQTEAEQTYT", "RRNAQTEAEQAYL", "RQKRQTVAEQAYL", 
+            "GRNAQTEAEQAYL"), seq_type='aa' )+
+  theme(legend.key.size = unit(1, 'cm'))+
+  theme(legend.title = element_text(size = 15))+
+  theme(legend.text = element_text(size = 10))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=15))+
+  theme(axis.title.x = element_blank())+
+  theme(legend.position="none")
+
+```
+
