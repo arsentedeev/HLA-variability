@@ -1,2 +1,2 @@
 # HLA-variability
-### Variability of immunologically significant human MHC class I
+### Variability of immunologically significant regions of human MHC class I
